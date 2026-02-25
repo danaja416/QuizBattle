@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+
+{% block title %}Лобби - QuizBattle{% endblock %}
+
+{% block content %}
+<!-- PIN код -->
+<div class="pin-display">
+    <div class="pin-label">PIN-код игры</div>
+    <div class="pin-code" id="gamePin">------</div>
+    <button class="btn btn-secondary" style="margin-top: 15px;" onclick="copyPin()">
+        Копировать
+    </button>
+</div>
+
+<!-- информация об игре -->
+<div class="card">
+    <div class="card-header">
+        <div>
+            <h2 class="card-title" id="gameTopic">загрузка...</h2>
+            <span id="gameSettings" style="color: var(--text-muted); font-size: 13px;"></span>
+        </div>
+        <span class="badge" id="gameModeBadge">команды</span>
+    </div>
+    
+    <!-- Команды -->
+    <div class="teams-grid" id="teamsContainer">
+        <div class="team-box team-a">
+            <div class="team-header">
+                <span class="team-name">Команда А</span>
+                <span class="team-score" id="scoreA">0</span>
+            </div>
+            <ul class="player-list" id="teamAList">
+                <li style="color: var(--text-muted); text-align: center; padding: 20px;">
+                    Ожидание...
+                </li>
+            </ul>
+        </div>
+        
+        <div class="vs-divider">VS</div>
+        
+        <div class="team-box team-b">
+            <div class="team-header">
+                <span class="team-name">Команда Б</span>
+                <span class="team-score" id="scoreB">0</span>
+            </div>
+            <ul class="player-list" id="teamBList">
+                <li style="color: var(--text-muted); text-align: center; padding: 20px;">
+                    Ожидание...
+                </li>
+            </ul>
+        </div>
+    </div>
+    
+    <!-- FFA режим -->
+    <div id="ffaContainer" style="display: none;">
+        <ul class="player-list" id="ffaList"></ul>
+    </div>
+    
+    <!-- кнопки управления -->
+    <div style="text-align: center; margin-top: 20px;">
+        <button id="startBtn" class="btn btn-primary btn-large" style="display: none;" onclick="startGame()">
+            начать игру
+        </button>
+        <p id="waitingText" style="color: var(--text-muted); margin-top: 10px;">
+            ожидание игроков...
+        </p>
+    </div>
+</div>
+
+<!-- список игроков для админа (с возможностью кика) -->
+<div class="card" id="adminPanel" style="display: none;">
+    <div class="card-header">
+        <h3 class="card-title">управление игроками</h3>
+    </div>
+    <div id="adminPlayerList"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script>
+    const socket = io();
+    let gamePin = '';
+    let isCreator = false;
+    let gameMode = 'teams';
+    
+    // получаем pin из url
+    const urlParams = new URLSearchParams(window.location.search);
+    gamePin = urlParams.get('pin');
+    
+    if (!gamePin) {
+        window.location.href = '/';
+    }
+    
+    document.getElementById('gamePin').textContent = gamePin;
+    
+    socket.on('connect', function() {
+        // присоединяемся к игре
+        socket.emit('join_game', {
+            pin: gamePin,
+            guest_name: '{{ current_user.username if current_user.is_authenticated else "игрок" }}'
+        });
+    });
+    
+    socket.on('joined', function(data) {
+        gameMode = data.mode;
+        
+        if (data.mode === 'ffa') {
+            document.getElementById('teamsContainer').style.display = 'none';
+            document.getElementById('ffaContainer').style.display = 'block';
+            document.getElementById('gameModeBadge').textContent = 'Все против всех';
+        }
+        
+        document.getElementById('gameTopic').textContent = data.topic;
+        document.getElementById('gameSettings').textContent = 
+            data.difficulty + ' • ' + data.questions_count + ' вопросов';
+    });
+    
+    socket.on('player_joined', function(data) {
+        updatePlayerList(data.players);
+        
+        // проверяем можем ли начать
+        if (data.players.length >= 2) {
+            document.getElementById('waitingText').textContent = 'Можно начинать!';
+        }
+    });
+    
+    socket.on('player_left', function(data) {
+        updatePlayerList(data.players);
+    });
+    
+    socket.on('game_started', function() {
+        playSound('start');
+        window.location.href = '/game?pin=' + gamePin;
+    });
+    
+    function updatePlayerList(players) {
+        const teamA = players.filter(p => p.team === 'A');
+        const teamB = players.filter(p => p.team === 'B');
+        
+        // обновляем команду А
+        const listA = document.getElementById('teamAList');
+        if (teamA.length === 0) {
+            listA.innerHTML = '<li style="color: var(--text-muted); text-align: center; padding: 20px;">Ожидание...</li>';
+        } else {
+            listA.innerHTML = teamA.map(p => `
+                <li class="player-item">
+                    <span class="player-name">${p.name}</span>
+                    ${p.is_you ? '<span class="badge badge-admin">Вы</span>' : ''}
+                </li>
+            `).join('');
+        }
+        
+        // обновляем команду Б
+        const listB = document.getElementById('teamBList');
+        if (teamB.length === 0) {
+            listB.innerHTML = '<li style="color: var(--text-muted); text-align: center; padding: 20px;">Ожидание...</li>';
+        } else {
+            listB.innerHTML = teamB.map(p => `
+                <li class="player-item">
+                    <span class="player-name">${p.name}</span>
+                    ${p.is_you ? '<span class="badge badge-admin">Вы</span>' : ''}
+                </li>
+            `).join('');
+        }
+        
+        // обновляем ffa список
+        if (gameMode === 'ffa') {
+            document.getElementById('ffaList').innerHTML = players.map(p => `
+                <li class="player-item">
+                    <span class="player-name">${p.name}</span>
+                    ${p.is_you ? '<span class="badge badge-admin">вы</span>' : ''}
+                </li>
+            `).join('');
+        }
+        
+        // показываем кнопку старта если мы создатель
+        // (в реальности нужно проверять на бэкенде)
+        if (players.length >= 2) {
+            document.getElementById('startBtn').style.display = 'inline-flex';
+        }
+    }
+    
+    function startGame() {
+        socket.emit('start_game', { pin: gamePin });
+    }
+    
+    function copyPin() {
+        navigator.clipboard.writeText(gamePin).then(() => {
+            alert('PIN скопирован: ' + gamePin);
+        });
+    }
+</script>
+{% endblock %}
